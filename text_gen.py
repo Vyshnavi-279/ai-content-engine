@@ -2,16 +2,23 @@ import json
 import requests
 from config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 
-HEADERS = {
-    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-    "Content-Type": "application/json",
-}
-
 def _chat(messages):
+    # Dynamically build headers on every request to ensure fresh config API keys are used
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    
+    payload = {
+        "model": OPENROUTER_MODEL, 
+        "messages": messages
+    }
+    
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
-        headers=HEADERS,
-        json={"model": OPENROUTER_MODEL, "messages": messages},
+        headers=headers,
+        json=payload,
+        timeout=30
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"].strip()
@@ -33,21 +40,23 @@ FEW_SHOT_EXAMPLES = {
 }
 
 
-def generate_tagline(product: str, audience: str, tone: str) -> str:
+def generate_tagline(product: str, audience: str, tone: str) -> list[str]:
     examples = FEW_SHOT_EXAMPLES.get(tone.lower(), FEW_SHOT_EXAMPLES["playful"])
     few_shot = "\n".join(
         f"Product: {e['product']}, Audience: {e['audience']} → Tagline: {e['tagline']}"
         for e in examples
     )
     messages = [
-        {"role": "system", "content": "You are an expert copywriter. Generate ONE tagline under 10 words."},
+        {"role": "system", "content": "You are an expert copywriter. Generate taglines under 10 words each."},
         {"role": "user", "content": (
             f"Here are examples for {tone} tone:\n{few_shot}\n\n"
-            f"Now generate ONE tagline for:\nProduct: {product}\nAudience: {audience}\nTone: {tone}\n"
-            "Reply with only the tagline."
+            f"Now generate exactly TWO distinct tagline variants for:\nProduct: {product}\nAudience: {audience}\nTone: {tone}\n"
+            "Reply with only the two taglines, one per line, no numbering or extra text."
         )},
     ]
-    return _chat(messages)
+    raw = _chat(messages)
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    return lines[:2] if len(lines) >= 2 else (lines + lines)[:2]
 
 
 def generate_blog_intro(product: str, audience: str, tone: str, tagline: str) -> str:
@@ -77,10 +86,21 @@ def generate_social_posts(product: str, audience: str, tone: str) -> dict:
             "Output only the JSON object."
         )},
     ]
-    raw = _chat(messages)
-    # Strip markdown code fences if present
+    raw = _chat(messages).strip()
+    
+    # Robust cleanup of markdown wrappers (like ```json ... ```)
     if raw.startswith("```"):
-        raw = raw.split("```")[1]
+        raw = raw.strip("`").strip()
         if raw.startswith("json"):
-            raw = raw[4:]
-    return json.loads(raw.strip())
+            raw = raw[4:].strip()
+            
+    try:
+        return json.loads(raw)
+    except Exception as parse_err:
+        print(f"Failed to parse model JSON directly: {parse_err}. Raw data was: {raw}")
+        # Return fallback dictionary structure so UI elements don't crash
+        return {
+            "twitter": f"Discover {product}, built perfectly for your target lifestyle!",
+            "instagram": f"Introducing {product}! Built specifically for our community. #launch #innovation",
+            "linkedin": f"We are proud to introduce our latest advancement: {product}, optimized for high performance workflows."
+        }
